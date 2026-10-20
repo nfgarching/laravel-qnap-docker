@@ -1,4 +1,4 @@
-# Laravel auf QNAP Container Station: nginx + PHP-FPM, Reverb, Queue-Worker, Redis, lego.
+# Laravel auf QNAP Container Station: nginx + PHP-FPM, Reverb, Queue-Worker, Scheduler, Redis, lego.
 # Werte dieser Installation stehen in .env (Vorlage .env.example), die Laravel-App in src/.
 # Zusätzliche Mounts (z. B. Freigaben des NAS): docker-compose.override.yaml.
 
@@ -109,6 +109,24 @@ services:
     restart: unless-stopped
     user: www-data
     command: ["php", "artisan", "queue:work", "--tries=1", "--max-time=3600", "--timeout=300"]
+    volumes:
+      - ./src:/var/www/html
+    depends_on:
+      - app
+      - redis
+    networks:
+      - default
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # Laravel-Scheduler (README, „Scheduler“). Nur eine Instanz pro Datenbank darf ihn
+  # laufen lassen, sonst laufen geplante Befehle doppelt.
+  scheduler:
+    image: ${APP_IMAGE:-laravel-qnap-app}:latest
+    container_name: ${CONTAINER_PREFIX:-laravel}_scheduler
+    restart: unless-stopped
+    user: www-data
+    command: ["php", "artisan", "schedule:work"]
     volumes:
       - ./src:/var/www/html
     depends_on:

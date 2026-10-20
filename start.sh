@@ -1,5 +1,5 @@
 #!/bin/sh
-# Startet die Laravel-Umgebung (nginx + PHP-FPM, Reverb, Queue, Redis, lego) per Docker Compose.
+# Startet die Laravel-Umgebung (nginx + PHP-FPM, Reverb, Queue, Scheduler, Redis, lego) per Docker Compose.
 # Aufruf: ./start.sh [--build]
 
 # Container Station setzt HOME auf ein nicht beschreibbares Verzeichnis (siehe README.md).

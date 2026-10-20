@@ -2,7 +2,7 @@
 # kopieren; docker compose liest die Datei automatisch mit (nicht versioniert).
 #
 # Den realen Pfad unter /share/CACHEDEV1_DATA/ angeben, nicht den Symlink /share/<Freigabe>.
-# Alle drei PHP-Container brauchen dieselben Mounts, da Queue-Jobs und Reverb denselben
+# Alle PHP-Container brauchen dieselben Mounts, da Queue-Jobs, Reverb und Scheduler denselben
 # Code mit denselben Pfaden ausführen.
 
 x-shares: &shares
@@ -14,4 +14,6 @@ services:
   queue:
     volumes: *shares
   reverb:
+    volumes: *shares
+  scheduler:
     volumes: *shares

@@ -1,7 +1,7 @@
 # Laravel auf QNAP Container Station
 
 Docker-Compose-Setup, mit dem eine Laravel-Anwendung (PHP 8.4) auf einem QNAP-NAS läuft:
-nginx + PHP-FPM, Queue-Worker, Laravel Reverb (WebSockets), Redis und ein
+nginx + PHP-FPM, Queue-Worker, Scheduler, Laravel Reverb (WebSockets), Redis und ein
 Let's-Encrypt-Zertifikat per DNS-01, alles im LAN unter einem eigenen Hostnamen mit eigener
 IP-Adresse.
 
@@ -19,6 +19,7 @@ Getestet auf QTS mit Kernel 5.10.60 (arm64), Container Station mit Docker Compos
 | `webserver` | `nginx:alpine`            | HTTPS auf eigener LAN-IP, Reverb-Proxy unter `/app`, Webhook-Port |
 | `queue`     | eigenes                   | `php artisan queue:work` |
 | `reverb`    | eigenes                   | `php artisan reverb:start` (WebSockets) |
+| `scheduler` | eigenes                   | `php artisan schedule:work` (nur eine Instanz je Datenbank) |
 | `redis`     | `redis:7-alpine`          | Cache, Sessions, Queue |
 | `lego`      | `goacme/lego`             | Let's-Encrypt-Zertifikat per DNS-01 über acme-dns, Erneuerung alle 12 h |
 
@@ -137,7 +138,7 @@ docker exec -u www-data laravel_app php artisan migrate --force
 docker exec -u www-data laravel_app php artisan install:broadcasting --reverb   # falls noch nicht vorhanden
 ```
 
-Die Container heißen `<CONTAINER_PREFIX>_app`, `_web`, `_queue`, `_reverb`, `_redis`, `_lego`.
+Die Container heißen `<CONTAINER_PREFIX>_app`, `_web`, `_queue`, `_reverb`, `_scheduler`, `_redis`, `_lego`.
 
 Frontend-Assets mit einem Wegwerf-Container bauen (Vite 7 braucht Node ≥ 20, das PHP-Image
 hat kein Node):
@@ -268,11 +269,27 @@ braucht, entfernt den zweiten `listen 443`-Block in der nginx-Vorlage und die
   Befehle mit `-u www-data` im Container ausführen. Als root angelegte Cache-Dateien kann
   PHP-FPM später nicht überschreiben.
 
+## Scheduler
+
+Der Service `scheduler` führt `php artisan schedule:work` aus und startet jede Minute die
+fälligen Befehle aus `routes/console.php`. Teilen sich mehrere Instanzen eine Datenbank, darf
+ihn nur eine davon laufen lassen, sonst läuft jeder geplante Befehl doppelt. `->onOneServer()`
+hilft dabei nicht, weil es einen gemeinsamen Cache voraussetzt und jede Instanz ihren eigenen
+Redis hat. Auf den anderen Instanzen den Container stoppen.
+
+```sh
+docker exec -u www-data <prefix>_scheduler php artisan schedule:list
+docker logs -f <prefix>_scheduler    # jeder Lauf mit Dauer
+```
+
+Anders als `queue:work` hält `schedule:work` den Code nicht im Speicher (jede Minute startet
+`schedule:run` als eigener Prozess), ein Neustart nach einem Deploy ist daher nicht nötig.
+
 ## Zusätzliche Mounts
 
 Freigaben des NAS, die die App lesen oder beschreiben soll, gehören in eine
 `docker-compose.override.yaml` (Vorlage: `docker-compose.override.example.yaml`).
-`docker compose` liest sie automatisch mit. `app`, `queue` und `reverb` brauchen dieselben
+`docker compose` liest sie automatisch mit. `app`, `queue`, `reverb` und `scheduler` brauchen dieselben
 Mounts.
 
 ## PHP-Image
