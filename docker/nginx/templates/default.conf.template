@@ -1,0 +1,99 @@
+# Vorlage: Das nginx-Image ersetzt beim Start ${APP_DOMAIN} und ${NGINX_REDIRECT_HOSTS}
+# (Werte aus .env, siehe docker-compose.yaml) und schreibt nach conf.d/default.conf.
+
+# https://${APP_DOMAIN} (eigene LAN-IP, Let's-Encrypt-Zertifikat vom lego-Container aus
+# docker/letsencrypt; DNS: A-Eintrag auf die LAN-IP)
+server {
+    listen 443 ssl default_server;
+    http2 on;
+    server_name ${APP_DOMAIN};
+    root /var/www/html/public;
+    index index.php index.html;
+    client_max_body_size 100M;
+
+    ssl_certificate     /etc/nginx/letsencrypt/${APP_DOMAIN}.crt;
+    ssl_certificate_key /etc/nginx/letsencrypt/${APP_DOMAIN}.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    add_header Strict-Transport-Security "max-age=31536000" always;
+
+    location / {
+        try_files $uri $uri/ /index.php?$query_string;
+    }
+
+    # Reverb (WebSockets) über denselben Host: wss://${APP_DOMAIN}/app/...
+    location /app {
+        proxy_pass http://reverb:8081;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "Upgrade";
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_read_timeout 120s;
+    }
+
+    location ~ \.php$ {
+        fastcgi_pass app:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+
+# Weitere Namen (Kurzname, Router-Name, IP) → APP_DOMAIN. Zertifikat der internen CA
+# (docker/certs), damit Geräte, die die CA importiert haben, ohne Warnung weitergeleitet werden.
+server {
+    listen 443 ssl;
+    http2 on;
+    server_name ${NGINX_REDIRECT_HOSTS};
+
+    ssl_certificate     /etc/nginx/certs/server.crt;
+    ssl_certificate_key /etc/nginx/certs/server.key;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    location / {
+        return 301 https://${APP_DOMAIN}$request_uri;
+    }
+}
+
+# http → https; CA-Zertifikat der internen CA unter /ca.crt
+server {
+    listen 80;
+    server_name _;
+
+    location = /ca.crt {
+        alias /etc/nginx/certs/ca.crt;
+        default_type application/x-x509-ca-cert;
+    }
+
+    location / {
+        return 301 https://${APP_DOMAIN}$request_uri;
+    }
+}
+
+# Über die NAS-IP (Host-Port APP_PORT): nur Webhooks (z. B. eine sipgate-Weiterleitung),
+# alles andere wird auf https://${APP_DOMAIN} umgeleitet.
+server {
+    listen 8080;
+    server_name _;
+    root /var/www/html/public;
+
+    location /api/webhooks/ {
+        try_files $uri /index.php?$query_string;
+    }
+
+    location = /index.php {
+        internal;
+        fastcgi_pass app:9000;
+        fastcgi_param SCRIPT_FILENAME $document_root$fastcgi_script_name;
+        include fastcgi_params;
+    }
+
+    location / {
+        return 301 https://${APP_DOMAIN}$request_uri;
+    }
+}

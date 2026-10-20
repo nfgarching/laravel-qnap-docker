@@ -1,0 +1,17 @@
+# Beispiel: Freigaben des NAS in die App einhängen. Als docker-compose.override.yaml
+# kopieren; docker compose liest die Datei automatisch mit (nicht versioniert).
+#
+# Den realen Pfad unter /share/CACHEDEV1_DATA/ angeben, nicht den Symlink /share/<Freigabe>.
+# Alle drei PHP-Container brauchen dieselben Mounts, da Queue-Jobs und Reverb denselben
+# Code mit denselben Pfaden ausführen.
+
+x-shares: &shares
+  - /share/CACHEDEV1_DATA/Public/laravel:/var/www/html/storage/app/shared
+
+services:
+  app:
+    volumes: *shares
+  queue:
+    volumes: *shares
+  reverb:
+    volumes: *shares

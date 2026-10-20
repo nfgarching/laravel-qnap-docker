@@ -1,0 +1,26 @@
+# Laravel-Anwendung: eigenes Git-Repository
+/src/
+
+# Umgebungswerte für docker compose (Hostname, IPs, E-Mail)
+.env
+.env.*
+!.env.example
+
+# Interne CA und Server-Zertifikat: von docker/certs/make-certs.sh erzeugt, Schlüssel geheim
+/docker/certs/*
+!/docker/certs/make-certs.sh
+
+# Let's Encrypt (lego): Zertifikate, privater Schlüssel, ACME-Konto
+/docker/letsencrypt/
+
+# Mounts dieser Installation (Vorlage: docker-compose.override.example.yaml)
+/docker-compose.override.yaml
+
+# Sicherungen und Editor-/Systemreste
+*.bak
+*.bak-*
+*.swp
+*~
+.DS_Store
+@Recycle/
+.@__thumb/

@@ -1,0 +1,160 @@
+# Laravel auf QNAP Container Station: nginx + PHP-FPM, Reverb, Queue-Worker, Redis, lego.
+# Werte dieser Installation stehen in .env (Vorlage .env.example), die Laravel-App in src/.
+# Zusätzliche Mounts (z. B. Freigaben des NAS): docker-compose.override.yaml.
+
+services:
+  app:
+    build:
+      context: ./docker/php
+      # www-data im Image = Besitzer von src/, sonst scheitern Writes in den Bind-Mount.
+      args:
+        WWWUSER: ${HOST_UID:-1000}
+        WWWGROUP: ${HOST_GID:-100}
+    image: ${APP_IMAGE:-laravel-qnap-app}:latest
+    container_name: ${CONTAINER_PREFIX:-laravel}_app
+    restart: unless-stopped
+    volumes:
+      - ./src:/var/www/html
+    depends_on:
+      - redis
+    networks:
+      - default
+    labels:
+       - "com.centurylinklabs.watchtower.enable=false"
+
+  webserver:
+    image: nginx:alpine
+    container_name: ${CONTAINER_PREFIX:-laravel}_web
+    restart: unless-stopped
+    # Browser: https://${APP_DOMAIN} über die eigene LAN-IP (Netz "lan").
+    # APP_PORT auf der NAS-IP nur für Webhooks (nginx: listen 8080).
+    ports:
+      - "${APP_PORT:-8026}:8080"
+    # Das nginx-Image füllt templates/*.template per envsubst nach conf.d/. Der Filter
+    # beschränkt das auf diese Variablen, nginx-Variablen wie $host bleiben unberührt.
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?APP_DOMAIN in .env setzen}
+      NGINX_REDIRECT_HOSTS: ${NGINX_REDIRECT_HOSTS:?NGINX_REDIRECT_HOSTS in .env setzen}
+      NGINX_ENVSUBST_FILTER: "^(APP_DOMAIN|NGINX_REDIRECT_HOSTS)$$"
+      LAN_IP: ${LAN_IP}
+      LAN_GATEWAY: ${LAN_GATEWAY}
+      LAN_ROUTES: ${LAN_ROUTES:-}
+    volumes:
+      - ./src:/var/www/html
+      - ./docker/nginx/templates:/etc/nginx/templates:ro
+      # Let's Encrypt (lego); Verzeichnis statt Einzeldateien, damit Erneuerungen sichtbar werden.
+      - ./docker/letsencrypt/certificates:/etc/nginx/letsencrypt:ro
+      # Interne CA nur für den Redirect von NGINX_REDIRECT_HOSTS auf APP_DOMAIN.
+      - ./docker/certs/server.crt:/etc/nginx/certs/server.crt:ro
+      - ./docker/certs/server.key:/etc/nginx/certs/server.key:ro
+      - ./docker/certs/ca.crt:/etc/nginx/certs/ca.crt:ro
+      - ./docker/nginx/lan-routes.sh:/docker-entrypoint.d/05-lan-routes.sh:ro
+      - ./docker/nginx/reload-certs.sh:/docker-entrypoint.d/06-reload-certs.sh:ro
+    # Für lan-routes.sh (Route für VPN-Netze über den Router statt über die Bridge).
+    cap_add:
+      - NET_ADMIN
+    depends_on:
+      - app
+      - reverb
+    networks:
+      default:
+      lan:
+        ipv4_address: ${LAN_IP:?LAN_IP in .env setzen}
+        # Feste MAC, damit der Router das Gerät nach Neuanlage wiedererkennt.
+        mac_address: ${LAN_MAC:?LAN_MAC in .env setzen}
+
+  reverb:
+    image: ${APP_IMAGE:-laravel-qnap-app}:latest
+    container_name: ${CONTAINER_PREFIX:-laravel}_reverb
+    restart: unless-stopped
+    user: www-data
+    # Port 8081 muss mit REVERB_PORT in src/.env uebereinstimmen: App und Queue
+    # erreichen Reverb intern ueber "reverb:8081". Browser kommen ueber nginx
+    # (wss://${APP_DOMAIN}/app), daher keine Host-Portveroeffentlichung.
+    command: ["php", "artisan", "reverb:start", "--host=0.0.0.0", "--port=8081"]
+    volumes:
+      - ./src:/var/www/html
+    depends_on:
+      - app
+    networks:
+      - default
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # Let's-Encrypt-Zertifikat per DNS-01 über acme-dns (README, „HTTPS“).
+  # Prüft alle 12 Stunden und erneuert bei Fälligkeit; Daten in docker/letsencrypt/.
+  lego:
+    image: goacme/lego:v5.5.2
+    container_name: ${CONTAINER_PREFIX:-laravel}_lego
+    restart: unless-stopped
+    user: "${HOST_UID:-1000}:${HOST_GID:-100}"
+    entrypoint: ["/bin/sh", "/renew.sh"]
+    environment:
+      LEGO_DOMAINS: ${APP_DOMAIN:?APP_DOMAIN in .env setzen}
+      LEGO_EMAIL: ${ACME_EMAIL:?ACME_EMAIL in .env setzen}
+      ACME_DNS_API_BASE: ${ACME_DNS_API_BASE:-https://auth.acme-dns.io}
+      ACME_DNS_STORAGE_PATH: /acme-dns.json
+    volumes:
+      - ./docker/letsencrypt:/data
+      - ./docker/certs/acme-dns.json:/acme-dns.json
+      - ./docker/lego/renew.sh:/renew.sh:ro
+    networks:
+      - default
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  queue:
+    image: ${APP_IMAGE:-laravel-qnap-app}:latest
+    container_name: ${CONTAINER_PREFIX:-laravel}_queue
+    restart: unless-stopped
+    user: www-data
+    command: ["php", "artisan", "queue:work", "--tries=1", "--max-time=3600", "--timeout=300"]
+    volumes:
+      - ./src:/var/www/html
+    depends_on:
+      - app
+      - redis
+    networks:
+      - default
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+  # Cache, Sessions und Queue (README, „Redis“). Kein Port-Mapping, nur im Netz
+  # "default" erreichbar. volatile-lru verdrängt nie Queue-Jobs (ohne TTL).
+  redis:
+    image: redis:7-alpine
+    container_name: ${CONTAINER_PREFIX:-laravel}_redis
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--maxmemory", "256mb", "--maxmemory-policy", "volatile-lru"]
+    volumes:
+      - redis-data:/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      retries: 3
+      timeout: 5s
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+
+volumes:
+  redis-data:
+    name: ${REDIS_VOLUME:-laravel-redis}
+    driver: local
+
+networks:
+  default:
+  # Eigene LAN-IP für den Webserver (QNAP-Treiber qnet, Bridge auf LAN_IFACE).
+  # Hinweis: Das NAS selbst erreicht LAN_IP darüber nicht (macvlan-Eigenschaft).
+  lan:
+    driver: qnet
+    driver_opts:
+      iface: ${LAN_IFACE:-eth0}
+    ipam:
+      driver: qnet
+      options:
+        iface: ${LAN_IFACE:-eth0}
+      config:
+        - subnet: ${LAN_SUBNET:?LAN_SUBNET in .env setzen}
+          gateway: ${LAN_GATEWAY:?LAN_GATEWAY in .env setzen}
